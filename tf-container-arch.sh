@@ -1,69 +1,20 @@
 #!/bin/bash
 
 # Arrays to hold directories
-vpc_dirs=()
-cluster_dirs=()
-other_dirs=()
+vpc_dir="$HOME/git/container-arch--aws-vpc"
+cluster_dir="$HOME/git/container-arch--aws-ecs-cluster"
+app_dir="$HOME/git/container-arch--aws-ecs-app"
+
 REPO_NAME="linuxtips/linuxtips-app"
 REPO_EXISTS=$(aws ecr describe-repositories --repository-names $REPO_NAME 2>&1)
 
-export AWS_REGION="us-east-1"
-
-# Change directory to the root of the repository
-cd ../
-
-# Iterate through each directory in container-arch
-for dir in */; do
-  # Remove the trailing slash from the directory name
-  dir=${dir%/}
-  
-  if [[ "$dir" == *"vpc"* ]]; then
-    vpc_dirs+=("$dir")
-  elif [[ "$dir" == *"cluster"* ]]; then
-    cluster_dirs+=("$dir")
-  else
-    other_dirs+=("$dir")
-  fi
-done
-
-# Function to destroy terraform infrastructure in a directory
-destroy_terraform() {
-  local dir=$1
-  if [[ "$dir" == "container-arch--aws-ecs--module" ]]; then
-    echo
-    echo "Skipping directory: $dir"
-    return
-  fi
-  if [[ "$dir" == "container-arch--aws-ecs--app" ]]; then
-    pushd "$dir/terraform"
-
-    if [[ $REPO_EXISTS != *"RepositoryNotFoundException"* ]]; then
-      aws ecr delete-repository --repository-name "$REPO_NAME" --force --output text > /dev/null
-
-      if [ $? -ne 0 ]; then
-        echo "ECR delete failed"
-        exit 1
-      fi
-    fi
-
-  else
-    pushd "$dir"
-  fi
-  terraform destroy --auto-approve -var-file="environment/dev/terraform.tfvars"
-  popd
-}
+export AWS_REGION="us-east-2"
 
 # Function to apply terraform infrastructure in a directory
 apply_terraform() {
   local dir=$1
 
-  if [[ "$dir" == "container-arch--aws-ecs--module" ]]; then
-    echo
-    echo "Skipping directory: $dir"
-    return
-  fi
-
-  if [[ "$dir" == "container-arch--aws-ecs--app" ]]; then
+  if [[ "$dir" == "$app_dir" ]]; then
     # Check if ECR repository exists
 
     if [[ $REPO_EXISTS == *"RepositoryNotFoundException"* ]]; then
@@ -76,7 +27,7 @@ apply_terraform() {
     fi
 
     # Push "fidelissauro/chip:v2" image to the ECR
-    CONTAINER_IMAGE="923672208632.dkr.ecr.us-east-1.amazonaws.com/linuxtips/linuxtips-app:latest"
+    CONTAINER_IMAGE="150100906110.dkr.ecr.$AWS_REGION.amazonaws.com/linuxtips/linuxtips-app:latest"
     docker pull fidelissauro/chip:v2
     docker tag fidelissauro/chip:v2 $CONTAINER_IMAGE
     docker push $CONTAINER_IMAGE
@@ -86,14 +37,30 @@ apply_terraform() {
     pushd "$dir"
   fi
 
-  terraform apply --auto-approve -var-file="environment/dev/terraform.tfvars"
+  terraform workspace select dev
+  terraform apply --auto-approve
   popd
+}
 
-  if [[ "$dir" == "container-arch--aws-ecs--app" ]]; then
-    pushd "$dir"
-    ./pipeline.sh
-    popd
+# Function to destroy terraform infrastructure in a directory
+destroy_terraform() {
+  local dir=$1
+
+  pushd "$dir"
+  if [[ "$dir" == "$app_dir" ]]; then
+    if [[ $REPO_EXISTS != *"RepositoryNotFoundException"* ]]; then
+      aws ecr delete-repository --repository-name "$REPO_NAME" --force --output text > /dev/null
+
+      if [ $? -ne 0 ]; then
+        echo "ECR delete failed"
+        exit 1
+      fi
+    fi
   fi
+  
+  terraform workspace select dev
+  terraform destroy --auto-approve
+  popd
 }
 
 case $1 in
@@ -106,20 +73,15 @@ case $1 in
       exit 0
     fi
 
-    # Apply vpc directories first
-    for dir in "${vpc_dirs[@]}"; do
-      apply_terraform "$dir"
-    done
+    # Apply vpc directory first
+    apply_terraform $vpc_dir
 
     # Apply cluster directories next
-    for dir in "${cluster_dirs[@]}"; do
-      apply_terraform "$dir"
-    done
+    apply_terraform $cluster_dir
 
     # Apply other directories last
-    for dir in "${other_dirs[@]}"; do
-      apply_terraform "$dir"
-    done
+    apply_terraform $app_dirs
+
     exit 0
     ;;
   --destroy|-d)
@@ -132,19 +94,14 @@ case $1 in
     fi
 
     # Destroy other directories first
-    for dir in "${other_dirs[@]}"; do
-      destroy_terraform "$dir"
-    done
+    destroy_terraform $vpc_dir
 
     # Destroy cluster directories next
-    for dir in "${cluster_dirs[@]}"; do
-      destroy_terraform "$dir"
-    done
+    destroy_terraform $cluster_dir
 
     # Destroy vpc directories last
-    for dir in "${vpc_dirs[@]}"; do
-      destroy_terraform "$dir"
-    done
+    destroy_terraform $app_dirs
+
     exit 0
     ;;
   *)
