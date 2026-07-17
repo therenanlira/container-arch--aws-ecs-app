@@ -17,6 +17,16 @@ module "ecs_service" {
   service_hosts    = local.workspace.service_hosts
   service_listener = data.terraform_remote_state.aws_ecs_cluster.outputs.lb_listener_arn
 
+  scale_type              = local.workspace.scale_type
+  scale_tracking_cpu      = local.workspace.scale_tracking_cpu
+  scale_tracking_requests = local.workspace.scale_tracking_requests
+  task_min                = local.workspace.task_min
+  task_max                = local.workspace.task_max
+  scale_out_cpu           = local.workspace.scale_out_cpu
+  scale_in_cpu            = local.workspace.scale_in_cpu
+
+  alb_arn = data.terraform_remote_state.aws_ecs_cluster.outputs.lb_arn
+
   capabilities          = local.workspace.capabilities
   environment_variables = local.workspace.env_vars
 }

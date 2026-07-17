@@ -13,8 +13,35 @@ workspaces = {
     service_cpu         = 256
     service_mem         = 512
     service_listener    = 80
+    service_task_count  = 1
     service_launch_type = "EC2"
-    service_task_count  = 3
+
+    scale_type              = "requests-tracking"
+    scale_tracking_cpu      = 50
+    scale_tracking_requests = 30
+    task_min                = 3
+    task_max                = 6
+
+    scale_out_cpu = {
+      threshold           = 50
+      adjustment          = 2
+      comparison_operator = "GreaterThanOrEqualToThreshold"
+      statistic           = "Average"
+      period              = 60
+      evaluation_periods  = 2
+      cooldown            = 60
+    }
+
+    scale_in_cpu = {
+      threshold           = 30
+      adjustment          = -1
+      comparison_operator = "LessThanOrEqualToThreshold"
+      statistic           = "Average"
+      period              = 60
+      evaluation_periods  = 2
+      cooldown            = 60
+    }
+
 
     service_healthcheck = {
       healthy_threshold   = 3
