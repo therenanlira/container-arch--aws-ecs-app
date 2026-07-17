@@ -8,19 +8,29 @@ workspaces = {
 
     capabilities = ["EC2"]
 
-    service_name        = "chip"
-    service_port        = 8080
-    service_cpu         = 256
-    service_mem         = 512
-    service_listener    = 80
-    service_task_count  = 1
-    service_launch_type = "EC2"
+    service_name       = "chip"
+    service_port       = 8080
+    service_cpu        = 256
+    service_mem        = 512
+    service_listener   = 80
+    service_task_count = 1
+
+    service_launch_type = [
+      {
+        capacity_provider = "FARGATE"
+        weight            = 50
+      },
+      {
+        capacity_provider = "FARGATE_SPOT"
+        weight            = 50
+      }
+    ]
 
     scale_type              = "requests-tracking"
     scale_tracking_cpu      = 50
     scale_tracking_requests = 30
-    task_min                = 3
-    task_max                = 6
+    task_min                = 2
+    task_max                = 4
 
     scale_out_cpu = {
       threshold           = 50

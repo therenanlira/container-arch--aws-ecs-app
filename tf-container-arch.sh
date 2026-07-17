@@ -8,62 +8,64 @@ app_dir="$HOME/git/$project_name--aws-ecs-app"
 
 AWS_ENV="dev"
 REGISTRY_NAME="$AWS_ENV--chip"
-REGISTRY_EXISTS=$(aws ecr describe-repositories --repository-names $REGISTRY_NAME 2>&1)
+SOURCE_IMAGE="fidelissauro/chip:v2"
 
 export AWS_REGION="us-east-2"
+export AWS_PAGER=""
+
+# Push the app image to the ECR repository managed by terraform
+push_image() {
+  local account_id
+  account_id=$(aws sts get-caller-identity --query 'Account' --output text)
+
+  local registry="$account_id.dkr.ecr.$AWS_REGION.amazonaws.com"
+  local container_image="$registry/$REGISTRY_NAME:latest"
+
+  # The ECR repository is managed by terraform, but the image must exist
+  # before the ECS service starts. Create just the repository first.
+  terraform apply --auto-approve -target=module.ecs_service.aws_ecr_repository.main
+
+  aws ecr get-login-password --region "$AWS_REGION" | docker login --username AWS --password-stdin "$registry"
+  docker pull --platform linux/amd64 "$SOURCE_IMAGE"
+  docker tag "$SOURCE_IMAGE" "$container_image"
+  docker push "$container_image"
+}
 
 # Function to apply terraform infrastructure in a directory
 apply_terraform() {
   local dir=$1
 
-  if [[ "$dir" == "$app_dir" ]]; then
-    # Check if ECR repository exists
-
-    if [[ $REGISTRY_EXISTS == *"RepositoryNotFoundException"* ]]; then
-      aws ecr create-repository --repository-name $REGISTRY_NAME --output text > /dev/null  
-
-      if [ $? -ne 0 ]; then
-        echo "ECR create failed"
-        exit 1
-      fi
-    fi
-
-    # Push "fidelissauro/chip:v2" image to the ECR
-    CONTAINER_IMAGE="150100906110.dkr.ecr."$AWS_REGION".amazonaws.com/"$REGISTRY_NAME":latest"
-    aws ecr get-login-password --region $AWS_REGION | docker login --username AWS --password-stdin 150100906110.dkr.ecr."$AWS_REGION".amazonaws.com
-    docker pull fidelissauro/chip:v2
-    docker tag fidelissauro/chip:v2 $CONTAINER_IMAGE
-    docker push $CONTAINER_IMAGE
-    pushd "$dir/terraform"
-
-  else
-    pushd "$dir"
-  fi
+  echo ""
+  pushd "$dir"
+  echo ""
 
   terraform workspace select "$AWS_ENV"
+
+  if [[ "$dir" == "$app_dir" ]]; then
+    push_image
+  fi
+
   terraform apply --auto-approve
+
+  echo ""
   popd
+  echo ""
 }
 
 # Function to destroy terraform infrastructure in a directory
 destroy_terraform() {
   local dir=$1
 
+  echo ""
   pushd "$dir"
-  if [[ "$dir" == "$app_dir" ]]; then
-    if [[ $REGISTRY_EXISTS != *"RepositoryNotFoundException"* ]]; then
-      aws ecr delete-repository --repository-name "$REGISTRY_NAME" --force --output text > /dev/null
+  echo ""
 
-      if [ $? -ne 0 ]; then
-        echo "ECR delete failed"
-        exit 1
-      fi
-    fi
-  fi
-  
   terraform workspace select "$AWS_ENV"
   terraform destroy --auto-approve
+
+  echo ""
   popd
+  echo ""
 }
 
 case $1 in
@@ -82,8 +84,8 @@ case $1 in
     # Apply cluster directories next
     apply_terraform $cluster_dir
 
-    # Apply other directories last
-    apply_terraform $app_dirs
+    # Apply app directory last
+    apply_terraform $app_dir
 
     exit 0
     ;;
@@ -96,14 +98,14 @@ case $1 in
       exit 0
     fi
 
-    # Destroy other directories first
-    destroy_terraform $vpc_dir
+    # Destroy app directory first
+    destroy_terraform $app_dir
 
-    # Destroy cluster directories next
+    # Destroy cluster directory next
     destroy_terraform $cluster_dir
 
-    # Destroy vpc directories last
-    destroy_terraform $app_dirs
+    # Destroy vpc directory last
+    destroy_terraform $vpc_dir
 
     exit 0
     ;;
@@ -112,8 +114,7 @@ case $1 in
       --names "$AWS_ENV--$project_name--lb" \
       --query 'LoadBalancers[0].DNSName' \
       --output text \
-      --region $AWS_REGION \
-      --no-cli-pager)
+      --region $AWS_REGION)
 
     case $2 in
       system)
@@ -126,13 +127,20 @@ case $1 in
         done
         ;;
       k6)
+        echo ""
         pushd "$app_dir/load_test"
+        echo ""
+        
         k6 run -e LB_DNS=$DNS_NAME index.js
+
+        echo ""
+        popd
+        echo ""
       ;;
     esac
     ;;
   *)
-    echo "Usage: $0 [apply|destroy]"
+    echo "Usage: $0 [--apply|-A] [--destroy|-D] [--test|-T <system|cpu|k6>]"
     exit 1
     ;;
 esac
