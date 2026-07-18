@@ -47,10 +47,14 @@ jobs:
       - name: Setup GoLang
         uses: actions/setup-go@v5
         with:
-          go-version: "1.22"
+          # Read the Go version from go.mod so the linter's toolchain matches
+          # the code (avoids stdlib typecheck errors).
+          go-version-file: app/go.mod
 
       - name: Setup GoLint
-        run: go install github.com/golangci/golangci-lint/cmd/golangci-lint@v1.59.1
+        # golangci-lint must be built with the same Go minor as the code;
+        # v1.61.0 supports Go 1.23 (v1.59.x only went up to 1.22).
+        run: go install github.com/golangci/golangci-lint/cmd/golangci-lint@v1.61.0
 
       - name: GoLint
         run: golangci-lint run ./... -E errcheck
