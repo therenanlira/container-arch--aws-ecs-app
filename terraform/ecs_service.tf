@@ -1,5 +1,5 @@
 module "ecs_service" {
-  source = "git@github.com:therenanlira/container-arch--aws-ecs-module//ecs_service?ref=v1.4.0"
+  source = "git::https://github.com/therenanlira/container-arch--aws-ecs-module.git//ecs_service?ref=v1.4.0"
 
   cluster_name   = data.terraform_remote_state.aws_ecs_cluster.outputs.ecs_cluster_name
   project_name   = local.workspace.project_name
