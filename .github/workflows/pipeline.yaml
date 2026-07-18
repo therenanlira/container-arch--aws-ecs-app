@@ -98,6 +98,11 @@ jobs:
           # Read the Go version from go.mod so the linter's toolchain matches
           # the code (avoids stdlib typecheck errors).
           go-version-file: app/go.mod
+          # The Go project lives in app/, not the repo root; without this the
+          # dependency cache looks for go.mod/go.sum at the root and fails.
+          cache-dependency-path: |
+            app/go.mod
+            app/go.sum
 
       - name: Setup GoLint
         # golangci-lint must be built with the same Go minor as the code;
@@ -122,6 +127,9 @@ jobs:
       - uses: hashicorp/setup-terraform@v4
         with:
           terraform_version: "~> 1.13"
+          # The wrapper does not propagate terraform's real exit code to the
+          # shell, which breaks -detailed-exitcode checks.
+          terraform_wrapper: false
 
       - name: Terraform Init (no backend)
         run: terraform init -backend=false
@@ -210,6 +218,9 @@ jobs:
       - uses: hashicorp/setup-terraform@v4
         with:
           terraform_version: "~> 1.13"
+          # The wrapper does not propagate terraform's real exit code to the
+          # shell, which breaks -detailed-exitcode checks.
+          terraform_wrapper: false
 
       - name: Terraform Init
         run: terraform init
@@ -268,6 +279,9 @@ jobs:
       - uses: hashicorp/setup-terraform@v4
         with:
           terraform_version: "~> 1.13"
+          # The wrapper does not propagate terraform's real exit code to the
+          # shell, which breaks -detailed-exitcode checks.
+          terraform_wrapper: false
 
       - name: Terraform Init
         run: terraform init
