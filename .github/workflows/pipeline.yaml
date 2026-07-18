@@ -26,6 +26,11 @@ on:
         description: "Project name, used to build the cluster name"
         required: true
         type: string
+      deploy:
+        description: "When false, run CI only (no artifact upload, no CD jobs)"
+        required: false
+        type: boolean
+        default: true
 
 env:
   IMAGE_TAG: ${{ github.sha }}
@@ -103,6 +108,8 @@ jobs:
         run: docker save "$IMAGE_REPO:$IMAGE_TAG" | gzip > image.tar.gz
 
       - name: Upload Image
+        # Only needed when this run will deploy; skipped for CI-only validation.
+        if: ${{ inputs.deploy }}
         uses: actions/upload-artifact@v4
         with:
           name: app-image
@@ -141,6 +148,8 @@ jobs:
         run: terraform plan -out=plan.tfplan -parallelism=2000
 
       - name: Upload Plan
+        # Only needed when this run will apply; skipped for CI-only validation.
+        if: ${{ inputs.deploy }}
         uses: actions/upload-artifact@v4
         with:
           name: tfplan
@@ -152,6 +161,7 @@ jobs:
     name: CD Infra (Apply)
     runs-on: ubuntu-latest
     needs: [ci-infra-build]
+    if: ${{ inputs.deploy }}
     permissions:
       id-token: write
       contents: read
@@ -193,6 +203,7 @@ jobs:
     name: CD App (Deploy)
     runs-on: ubuntu-latest
     needs: [ci-app-build, cd-infra]
+    if: ${{ inputs.deploy }}
     permissions:
       id-token: write
       contents: read
