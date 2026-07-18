@@ -69,7 +69,7 @@ jobs:
 
       - uses: hashicorp/setup-terraform@v3
         with:
-          terraform_version: "~1.19.0"
+          terraform_version: "~> 1.13"
 
       - name: Terraform Init (no backend)
         run: terraform init -backend=false
@@ -125,7 +125,7 @@ jobs:
 
       - uses: hashicorp/setup-terraform@v3
         with:
-          terraform_version: "~1.19.0"
+          terraform_version: "~> 1.13"
 
       - name: Terraform Init
         run: terraform init
@@ -164,7 +164,7 @@ jobs:
 
       - uses: hashicorp/setup-terraform@v3
         with:
-          terraform_version: "~1.19.0"
+          terraform_version: "~> 1.13"
 
       - name: Terraform Init
         run: terraform init
