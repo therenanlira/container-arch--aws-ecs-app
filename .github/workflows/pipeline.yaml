@@ -1,0 +1,428 @@
+name: CI/CD Pipeline
+
+# Reusable workflow. Callers (dev.yaml, prod.yaml, ...) pass the
+# environment-specific values as inputs, so there is a single source of truth
+# for every workspace.
+on:
+  workflow_call:
+    inputs:
+      aws_env:
+        description: "Terraform workspace / environment (e.g. dev, prod)"
+        required: true
+        type: string
+      aws_account:
+        description: "AWS account ID"
+        required: true
+        type: string
+      aws_region:
+        description: "AWS region"
+        required: true
+        type: string
+      app_name:
+        description: "Application / ECS service name (also the container name)"
+        required: true
+        type: string
+      project_name:
+        description: "Project name, used to build the cluster name"
+        required: true
+        type: string
+      deploy:
+        description: "When false, run CI only (no artifact upload, no CD jobs)"
+        required: false
+        type: boolean
+        default: true
+
+env:
+  IMAGE_TAG: ${{ github.sha }}
+  IMAGE_REPO: ${{ inputs.aws_account }}.dkr.ecr.${{ inputs.aws_region }}.amazonaws.com/${{ inputs.aws_env }}/${{ inputs.app_name }}
+  ECR_REPOSITORY: ${{ inputs.aws_env }}/${{ inputs.app_name }}
+  CLUSTER_NAME: ${{ inputs.aws_env }}--${{ inputs.project_name }}--ecs-cluster
+
+jobs:
+  # ------------------------ Change detection ------------------------
+  # Detects whether anything under app/ (Go code, go.mod/go.sum, Dockerfile)
+  # changed, so the whole app chain (test -> build -> deploy) is skipped on
+  # infra-only changes, saving runners.
+  changes:
+    name: Detect App Changes
+    runs-on: ubuntu-latest
+    outputs:
+      app_changed: ${{ steps.filter.outputs.app_changed }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          # Full history so the diff base is always available.
+          fetch-depth: 0
+
+      - name: Check for app/ changes
+        id: filter
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            BASE="${{ github.event.pull_request.base.sha }}"
+          else
+            BASE="${{ github.event.before }}"
+          fi
+
+          # Unknown base (first push to a branch, force-push): build to be safe.
+          if [ -z "$BASE" ] || [ "$BASE" = "0000000000000000000000000000000000000000" ] || ! git cat-file -e "$BASE" 2>/dev/null; then
+            echo "No usable diff base; assuming app changed."
+            echo "app_changed=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          CHANGED=$(git diff --name-only "$BASE" "${{ github.sha }}" -- app/)
+          if [ -n "$CHANGED" ]; then
+            echo "App files changed:"
+            echo "$CHANGED"
+            echo "app_changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "No app changes."
+            echo "app_changed=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  # ----------------------------- CI -----------------------------
+  ci-app-test:
+    name: CI App (Lint & Test)
+    runs-on: ubuntu-latest
+    needs: [changes]
+    if: ${{ needs.changes.outputs.app_changed == 'true' }}
+    defaults:
+      run:
+        working-directory: app
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Setup GoLang
+        uses: actions/setup-go@v6
+        with:
+          # Read the Go version from go.mod so the linter's toolchain matches
+          # the code (avoids stdlib typecheck errors).
+          go-version-file: app/go.mod
+          # The Go project lives in app/, not the repo root; without this the
+          # dependency cache looks for go.mod/go.sum at the root and fails.
+          cache-dependency-path: |
+            app/go.mod
+            app/go.sum
+
+      - name: Setup GoLint
+        # golangci-lint must be built with the same Go minor as the code;
+        # v1.61.0 supports Go 1.23 (v1.59.x only went up to 1.22).
+        run: go install github.com/golangci/golangci-lint/cmd/golangci-lint@v1.61.0
+
+      - name: GoLint
+        run: golangci-lint run ./... -E errcheck
+
+      - name: Go Test
+        run: go test -v ./...
+
+  ci-infra-test:
+    name: CI Infra (Lint & Validate)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: terraform
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: "~> 1.13"
+          # The wrapper does not propagate terraform's real exit code to the
+          # shell, which breaks -detailed-exitcode checks.
+          terraform_wrapper: false
+
+      - name: Terraform Init (no backend)
+        run: terraform init -backend=false
+
+      - name: Terraform Format Check
+        run: terraform fmt -check
+
+      - name: Terraform Validate
+        run: terraform validate
+
+  # ------------------- Build (parallel, no AWS) -------------------
+  # Builds the image and hands it to the deploy job as an artifact. It needs no
+  # AWS credentials and does NOT depend on terraform, so it runs in parallel
+  # with the whole infra pipeline. The push only happens later, in cd-app,
+  # once cd-infra has created the ECR repository.
+  ci-app-build:
+    name: CI App (Build Image)
+    runs-on: ubuntu-latest
+    needs: [ci-app-test]
+    outputs:
+      image_exists: ${{ steps.check.outputs.image_exists }}
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: arn:aws:iam::${{ inputs.aws_account }}:role/github-oidc-role
+          aws-region: ${{ inputs.aws_region }}
+
+      - name: Check if image already exists in ECR
+        id: check
+        # Idempotency: on re-runs of a commit whose image was already pushed,
+        # skip the build and let cd-app go straight to the deploy. A missing
+        # repository (first run) counts as "image does not exist".
+        run: |
+          if aws ecr describe-images \
+            --repository-name "$ECR_REPOSITORY" \
+            --image-ids imageTag="$IMAGE_TAG" >/dev/null 2>&1; then
+            echo "Image $IMAGE_TAG already in ECR: skipping build."
+            echo "image_exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "image_exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Docker Build
+        if: steps.check.outputs.image_exists != 'true'
+        run: docker build --platform=linux/amd64 -t "$IMAGE_REPO:$IMAGE_TAG" app
+
+      - name: Docker Save
+        if: steps.check.outputs.image_exists != 'true'
+        run: docker save "$IMAGE_REPO:$IMAGE_TAG" | gzip > image.tar.gz
+
+      - name: Upload Image
+        # Only needed when this run will deploy and the image is not already
+        # published; skipped for CI-only validation and for re-runs.
+        if: ${{ inputs.deploy && steps.check.outputs.image_exists != 'true' }}
+        uses: actions/upload-artifact@v6
+        with:
+          name: app-image
+          path: image.tar.gz
+          retention-days: 1
+
+  ci-infra-build:
+    name: CI Infra (Plan)
+    runs-on: ubuntu-latest
+    needs: [ci-infra-test]
+    outputs:
+      has_changes: ${{ steps.plan.outputs.has_changes }}
+    permissions:
+      id-token: write
+      contents: read
+    defaults:
+      run:
+        working-directory: terraform
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: arn:aws:iam::${{ inputs.aws_account }}:role/github-oidc-role
+          aws-region: ${{ inputs.aws_region }}
+
+      - uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: "~> 1.13"
+          # The wrapper does not propagate terraform's real exit code to the
+          # shell, which breaks -detailed-exitcode checks.
+          terraform_wrapper: false
+
+      - name: Terraform Init
+        run: terraform init
+
+      - name: Terraform Workspace Select
+        run: terraform workspace select -or-create ${{ inputs.aws_env }}
+
+      - name: Terraform Plan
+        id: plan
+        # -detailed-exitcode: 0 = no changes, 1 = error, 2 = changes to apply.
+        # cd-infra is skipped when there is nothing to apply, saving a runner.
+        run: |
+          set +e
+          terraform plan -detailed-exitcode -out=plan.tfplan -parallelism=2000
+          EXIT=$?
+          set -e
+
+          if [ "$EXIT" -eq 1 ]; then
+            exit 1
+          elif [ "$EXIT" -eq 2 ]; then
+            echo "has_changes=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "No infrastructure changes."
+            echo "has_changes=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Upload Plan
+        # Only needed when this run will actually apply something.
+        if: ${{ inputs.deploy && steps.plan.outputs.has_changes == 'true' }}
+        uses: actions/upload-artifact@v6
+        with:
+          name: tfplan
+          path: terraform/plan.tfplan
+          retention-days: 1
+
+  # --------------------------- CD Infra ---------------------------
+  cd-infra:
+    name: CD Infra (Apply)
+    runs-on: ubuntu-latest
+    needs: [ci-infra-build]
+    if: ${{ inputs.deploy && needs.ci-infra-build.outputs.has_changes == 'true' }}
+    permissions:
+      id-token: write
+      contents: read
+    defaults:
+      run:
+        working-directory: terraform
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: arn:aws:iam::${{ inputs.aws_account }}:role/github-oidc-role
+          aws-region: ${{ inputs.aws_region }}
+
+      - uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: "~> 1.13"
+          # The wrapper does not propagate terraform's real exit code to the
+          # shell, which breaks -detailed-exitcode checks.
+          terraform_wrapper: false
+
+      - name: Terraform Init
+        run: terraform init
+
+      - name: Terraform Workspace Select
+        run: terraform workspace select -or-create ${{ inputs.aws_env }}
+
+      - name: Download Plan
+        uses: actions/download-artifact@v7
+        with:
+          name: tfplan
+          path: terraform
+
+      - name: Terraform Apply
+        run: terraform apply -auto-approve plan.tfplan
+
+  # ---------------------------- CD App ----------------------------
+  # Waits for both the built image (ci-app-build) and the infrastructure
+  # (cd-infra, which creates the ECR repo and ECS service), then publishes the
+  # image and rolls the service onto a new task definition revision.
+  cd-app:
+    name: CD App (Deploy)
+    runs-on: ubuntu-latest
+    needs: [changes, ci-app-build, cd-infra]
+    # Must still run when cd-infra is skipped (no infra changes: the app image
+    # deploy is independent), but never when a needed job failed or the run
+    # was cancelled — hence the explicit !failure() && !cancelled(). Also
+    # skipped entirely when nothing under app/ changed (no new image to ship).
+    if: ${{ !failure() && !cancelled() && inputs.deploy && needs.changes.outputs.app_changed == 'true' }}
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: arn:aws:iam::${{ inputs.aws_account }}:role/github-oidc-role
+          aws-region: ${{ inputs.aws_region }}
+
+      # The four docker steps below are skipped when ci-app-build found the
+      # image already in ECR (re-run): the deploy goes straight to the task
+      # definition registration.
+      - name: Download Image
+        if: needs.ci-app-build.outputs.image_exists != 'true'
+        uses: actions/download-artifact@v7
+        with:
+          name: app-image
+
+      - name: Docker Load
+        if: needs.ci-app-build.outputs.image_exists != 'true'
+        run: docker load < image.tar.gz
+
+      - name: ECR Login
+        if: needs.ci-app-build.outputs.image_exists != 'true'
+        run: |
+          aws ecr get-login-password --region "${{ inputs.aws_region }}" \
+            | docker login --username AWS --password-stdin \
+              "${{ inputs.aws_account }}.dkr.ecr.${{ inputs.aws_region }}.amazonaws.com"
+
+      - name: Push Image
+        if: needs.ci-app-build.outputs.image_exists != 'true'
+        run: docker push "$IMAGE_REPO:$IMAGE_TAG"
+
+      - name: Tag latest (server-side)
+        # Point "latest" at the image we just pushed without re-uploading layers.
+        # Re-putting an unchanged tag returns ImageAlreadyExistsException; ignore it.
+        run: |
+          MANIFEST=$(aws ecr batch-get-image \
+            --repository-name "$ECR_REPOSITORY" \
+            --image-ids imageTag="$IMAGE_TAG" \
+            --query 'images[0].imageManifest' --output text)
+
+          aws ecr put-image \
+            --repository-name "$ECR_REPOSITORY" \
+            --image-tag latest \
+            --image-manifest "$MANIFEST" >/dev/null 2>&1 || true
+
+      - name: Register Task Definition & Update Service
+        id: deploy
+        # Clone the running revision, swap the image, carry the tags over
+        # (--include TAGS returns them as a sibling of .taskDefinition), and
+        # strip the read-only fields that register-task-definition rejects.
+        run: |
+          CURRENT_TASK_DEF_ARN=$(aws ecs describe-services \
+            --cluster "$CLUSTER_NAME" --services "${{ inputs.app_name }}" \
+            --query 'services[0].taskDefinition' --output text)
+
+          NEW_TASK_DEF=$(aws ecs describe-task-definition \
+            --task-definition "$CURRENT_TASK_DEF_ARN" \
+            --include TAGS \
+            | jq --arg IMAGE "$IMAGE_REPO:$IMAGE_TAG" --arg NAME "${{ inputs.app_name }}" '
+                (.tags // []) as $tags
+                | .taskDefinition
+                | .containerDefinitions |= map(if .name == $NAME then .image = $IMAGE else . end)
+                | del(.taskDefinitionArn, .revision, .status, .requiresAttributes,
+                      .compatibilities, .registeredAt, .registeredBy)
+                | .tags = $tags
+              ')
+
+          NEW_TASK_DEF_ARN=$(aws ecs register-task-definition \
+            --cli-input-json "$NEW_TASK_DEF" \
+            --query 'taskDefinition.taskDefinitionArn' --output text)
+
+          echo "task_def_arn=$NEW_TASK_DEF_ARN" >> "$GITHUB_OUTPUT"
+
+          aws ecs update-service \
+            --cluster "$CLUSTER_NAME" --service "${{ inputs.app_name }}" \
+            --task-definition "$NEW_TASK_DEF_ARN" >/dev/null
+
+      - name: Wait for ECS service to stabilize
+        # The built-in waiter gives up after 10 minutes (40 x 15s) and is not
+        # configurable, so retry it up to 3 times (up to ~30 minutes total).
+        run: |
+          for attempt in 1 2 3; do
+            if aws ecs wait services-stable --cluster "$CLUSTER_NAME" --services "${{ inputs.app_name }}"; then
+              echo "Service is stable."
+              exit 0
+            fi
+            echo "Waiter timed out (attempt $attempt of 3), retrying..."
+          done
+          echo "Service did not stabilize in time."
+          exit 1
+
+      - name: Verify deployed task definition
+        # The service has a deployment circuit breaker with rollback enabled:
+        # a failed deploy rolls back to the previous revision, and the waiter
+        # then reports "stable" for the OLD version. Fail the pipeline when
+        # the active revision is not the one this run registered.
+        run: |
+          ACTIVE_TASK_DEF_ARN=$(aws ecs describe-services \
+            --cluster "$CLUSTER_NAME" --services "${{ inputs.app_name }}" \
+            --query 'services[0].taskDefinition' --output text)
+
+          EXPECTED_TASK_DEF_ARN="${{ steps.deploy.outputs.task_def_arn }}"
+
+          if [ "$ACTIVE_TASK_DEF_ARN" != "$EXPECTED_TASK_DEF_ARN" ]; then
+            echo "Deployment was rolled back!"
+            echo "  expected: $EXPECTED_TASK_DEF_ARN"
+            echo "  active:   $ACTIVE_TASK_DEF_ARN"
+            exit 1
+          fi
+
+          echo "Deployment verified: $ACTIVE_TASK_DEF_ARN"

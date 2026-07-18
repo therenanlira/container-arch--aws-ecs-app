@@ -8,7 +8,7 @@ workspaces = {
 
     capabilities = ["EC2"]
 
-    service_name       = "chip"
+    service_name       = "app"
     service_port       = 8080
     service_cpu        = 256
     service_mem        = 512
@@ -54,17 +54,17 @@ workspaces = {
 
 
     service_healthcheck = {
-      healthy_threshold   = 3
+      healthy_threshold   = 2
       unhealthy_threshold = 10
       timeout             = 10
-      interval            = 60
+      interval            = 15
       matcher             = "200-399"
       path                = "/healthcheck"
       port                = 8080
     }
 
     service_hosts = [
-      "chip.linuxtips.demo"
+      "app.linuxtips.demo"
     ]
 
     env_vars = [
