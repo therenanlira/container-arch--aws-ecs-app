@@ -1,0 +1,264 @@
+name: CI/CD Pipeline
+
+# Reusable workflow. Callers (dev.yaml, prod.yaml, ...) pass the
+# environment-specific values as inputs, so there is a single source of truth
+# for every workspace.
+on:
+  workflow_call:
+    inputs:
+      aws_env:
+        description: "Terraform workspace / environment (e.g. dev, prod)"
+        required: true
+        type: string
+      aws_account:
+        description: "AWS account ID"
+        required: true
+        type: string
+      aws_region:
+        description: "AWS region"
+        required: true
+        type: string
+      app_name:
+        description: "Application / ECS service name (also the container name)"
+        required: true
+        type: string
+      project_name:
+        description: "Project name, used to build the cluster name"
+        required: true
+        type: string
+
+env:
+  IMAGE_TAG: ${{ github.sha }}
+  IMAGE_REPO: ${{ inputs.aws_account }}.dkr.ecr.${{ inputs.aws_region }}.amazonaws.com/${{ inputs.aws_env }}/${{ inputs.app_name }}
+  ECR_REPOSITORY: ${{ inputs.aws_env }}/${{ inputs.app_name }}
+  CLUSTER_NAME: ${{ inputs.aws_env }}--${{ inputs.project_name }}--ecs-cluster
+
+jobs:
+  # ----------------------------- CI -----------------------------
+  ci-app-test:
+    name: CI App (Lint & Test)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: app
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup GoLang
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+
+      - name: Setup GoLint
+        run: go install github.com/golangci/golangci-lint/cmd/golangci-lint@v1.59.1
+
+      - name: GoLint
+        run: golangci-lint run ./... -E errcheck
+
+      - name: Go Test
+        run: go test -v ./...
+
+  ci-infra-test:
+    name: CI Infra (Lint & Validate)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: terraform
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "~1.19.0"
+
+      - name: Terraform Init (no backend)
+        run: terraform init -backend=false
+
+      - name: Terraform Format Check
+        run: terraform fmt -check
+
+      - name: Terraform Validate
+        run: terraform validate
+
+  # ------------------- Build (parallel, no AWS) -------------------
+  # Builds the image and hands it to the deploy job as an artifact. It needs no
+  # AWS credentials and does NOT depend on terraform, so it runs in parallel
+  # with the whole infra pipeline. The push only happens later, in cd-app,
+  # once cd-infra has created the ECR repository.
+  ci-app-build:
+    name: CI App (Build Image)
+    runs-on: ubuntu-latest
+    needs: [ci-app-test]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Docker Build
+        run: docker build --platform=linux/amd64 -t "$IMAGE_REPO:$IMAGE_TAG" app
+
+      - name: Docker Save
+        run: docker save "$IMAGE_REPO:$IMAGE_TAG" | gzip > image.tar.gz
+
+      - name: Upload Image
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-image
+          path: image.tar.gz
+          retention-days: 1
+
+  ci-infra-build:
+    name: CI Infra (Plan)
+    runs-on: ubuntu-latest
+    needs: [ci-infra-test]
+    permissions:
+      id-token: write
+      contents: read
+    defaults:
+      run:
+        working-directory: terraform
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::${{ inputs.aws_account }}:role/github-oidc-role
+          aws-region: ${{ inputs.aws_region }}
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "~1.19.0"
+
+      - name: Terraform Init
+        run: terraform init
+
+      - name: Terraform Workspace Select
+        run: terraform workspace select -or-create ${{ inputs.aws_env }}
+
+      - name: Terraform Plan
+        run: terraform plan -out=plan.tfplan -parallelism=2000
+
+      - name: Upload Plan
+        uses: actions/upload-artifact@v4
+        with:
+          name: tfplan
+          path: terraform/plan.tfplan
+          retention-days: 1
+
+  # --------------------------- CD Infra ---------------------------
+  cd-infra:
+    name: CD Infra (Apply)
+    runs-on: ubuntu-latest
+    needs: [ci-infra-build]
+    permissions:
+      id-token: write
+      contents: read
+    defaults:
+      run:
+        working-directory: terraform
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::${{ inputs.aws_account }}:role/github-oidc-role
+          aws-region: ${{ inputs.aws_region }}
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "~1.19.0"
+
+      - name: Terraform Init
+        run: terraform init
+
+      - name: Terraform Workspace Select
+        run: terraform workspace select -or-create ${{ inputs.aws_env }}
+
+      - name: Download Plan
+        uses: actions/download-artifact@v4
+        with:
+          name: tfplan
+          path: terraform
+
+      - name: Terraform Apply
+        run: terraform apply -auto-approve plan.tfplan
+
+  # ---------------------------- CD App ----------------------------
+  # Waits for both the built image (ci-app-build) and the infrastructure
+  # (cd-infra, which creates the ECR repo and ECS service), then publishes the
+  # image and rolls the service onto a new task definition revision.
+  cd-app:
+    name: CD App (Deploy)
+    runs-on: ubuntu-latest
+    needs: [ci-app-build, cd-infra]
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::${{ inputs.aws_account }}:role/github-oidc-role
+          aws-region: ${{ inputs.aws_region }}
+
+      - name: Download Image
+        uses: actions/download-artifact@v4
+        with:
+          name: app-image
+
+      - name: Docker Load
+        run: docker load < image.tar.gz
+
+      - name: ECR Login
+        run: |
+          aws ecr get-login-password --region "${{ inputs.aws_region }}" \
+            | docker login --username AWS --password-stdin \
+              "${{ inputs.aws_account }}.dkr.ecr.${{ inputs.aws_region }}.amazonaws.com"
+
+      - name: Push Image
+        run: docker push "$IMAGE_REPO:$IMAGE_TAG"
+
+      - name: Tag latest (server-side)
+        # Point "latest" at the image we just pushed without re-uploading layers.
+        # Re-putting an unchanged tag returns ImageAlreadyExistsException; ignore it.
+        run: |
+          MANIFEST=$(aws ecr batch-get-image \
+            --repository-name "$ECR_REPOSITORY" \
+            --image-ids imageTag="$IMAGE_TAG" \
+            --query 'images[0].imageManifest' --output text)
+
+          aws ecr put-image \
+            --repository-name "$ECR_REPOSITORY" \
+            --image-tag latest \
+            --image-manifest "$MANIFEST" >/dev/null 2>&1 || true
+
+      - name: Register Task Definition & Update Service
+        # Clone the running revision, swap the image, carry the tags over
+        # (--include TAGS returns them as a sibling of .taskDefinition), and
+        # strip the read-only fields that register-task-definition rejects.
+        run: |
+          CURRENT_TASK_DEF_ARN=$(aws ecs describe-services \
+            --cluster "$CLUSTER_NAME" --services "${{ inputs.app_name }}" \
+            --query 'services[0].taskDefinition' --output text)
+
+          NEW_TASK_DEF=$(aws ecs describe-task-definition \
+            --task-definition "$CURRENT_TASK_DEF_ARN" \
+            --include TAGS \
+            | jq --arg IMAGE "$IMAGE_REPO:$IMAGE_TAG" --arg NAME "${{ inputs.app_name }}" '
+                (.tags // []) as $tags
+                | .taskDefinition
+                | .containerDefinitions |= map(if .name == $NAME then .image = $IMAGE else . end)
+                | del(.taskDefinitionArn, .revision, .status, .requiresAttributes,
+                      .compatibilities, .registeredAt, .registeredBy)
+                | .tags = $tags
+              ')
+
+          NEW_TASK_DEF_ARN=$(aws ecs register-task-definition \
+            --cli-input-json "$NEW_TASK_DEF" \
+            --query 'taskDefinition.taskDefinitionArn' --output text)
+
+          aws ecs update-service \
+            --cluster "$CLUSTER_NAME" --service "${{ inputs.app_name }}" \
+            --task-definition "$NEW_TASK_DEF_ARN" >/dev/null
+
+      - name: Wait for ECS service to stabilize
+        run: aws ecs wait services-stable --cluster "$CLUSTER_NAME" --services "${{ inputs.app_name }}"

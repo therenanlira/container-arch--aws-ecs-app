@@ -8,7 +8,7 @@ workspaces = {
 
     capabilities = ["EC2"]
 
-    service_name       = "chip"
+    service_name       = "app"
     service_port       = 8080
     service_cpu        = 256
     service_mem        = 512
@@ -64,7 +64,7 @@ workspaces = {
     }
 
     service_hosts = [
-      "chip.linuxtips.demo"
+      "app.linuxtips.demo"
     ]
 
     env_vars = [
