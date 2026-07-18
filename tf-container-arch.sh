@@ -79,8 +79,37 @@ deploy_service() {
     --task-definition "$new_task_def_arn" >/dev/null
 
   echo "Waiting for service to become stable"
-  aws ecs wait services-stable \
-    --cluster "$cluster_name" --services "$service_name"
+  # The built-in waiter gives up after 10 minutes (40 x 15s) and is not
+  # configurable, so retry it up to 3 times (up to ~30 minutes total).
+  local stable=false
+  for attempt in 1 2 3; do
+    if aws ecs wait services-stable \
+      --cluster "$cluster_name" --services "$service_name"; then
+      stable=true
+      break
+    fi
+    echo "Waiter timed out (attempt $attempt of 3), retrying..."
+  done
+
+  if [[ "$stable" != "true" ]]; then
+    echo "Service did not stabilize in time"
+    return 1
+  fi
+
+  # The deployment circuit breaker rolls back failed deploys, and the waiter
+  # then reports "stable" for the OLD version. Verify the active revision is
+  # the one we just registered.
+  local active_task_def_arn
+  active_task_def_arn=$(aws ecs describe-services \
+    --cluster "$cluster_name" --services "$service_name" \
+    --query 'services[0].taskDefinition' --output text)
+
+  if [[ "$active_task_def_arn" != "$new_task_def_arn" ]]; then
+    echo "Deployment was rolled back!"
+    echo "  expected: $new_task_def_arn"
+    echo "  active:   $active_task_def_arn"
+    return 1
+  fi
 
   echo "Deploy complete"
 }
