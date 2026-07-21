@@ -37,46 +37,54 @@ retag_latest() {
     --image-manifest "$manifest" >/dev/null 2>&1 || true
 }
 
-# Register a new task definition revision pointing at the freshly pushed
-# image, roll the service onto it, and wait for it to stabilize.
-deploy_service() {
+# Build, lint, test and push the app image so it is already in ECR before
+# terraform runs. The module resolves its container image from the latest
+# non-"latest" tag in ECR (see check_ecr_latest_tag.sh); pushing first means
+# that lookup sees THIS commit's image right away, so terraform's own apply
+# registers the correct task definition revision directly — no separate CLI
+# registration step needed, and no lag/revert to an older image next run.
+build_and_push_image() {
+  local registry="$AWS_ACCOUNT.dkr.ecr.$AWS_REGION.amazonaws.com"
+  local app_name="app"
+  local image_repo="$registry/$AWS_ENV/$app_name"
+
+  # Same hook the CI pipeline runs before building: bootstraps the ECR repo
+  # when it doesn't exist yet (e.g. right after the nightly destroy), a no-op
+  # otherwise.
+  AWS_ENV="$AWS_ENV" APP_NAME="$app_name" bash "$APP1_DIR/ci/pre_build.sh"
+
+  aws ecr get-login-password --region "$AWS_REGION" | docker login --username AWS --password-stdin "$registry"
+
+  echo ""
+  pushd ../app
+  echo ""
+
+  go install github.com/golangci/golangci-lint/cmd/golangci-lint@v1.59.1
+  golangci-lint run ./... -E errcheck
+  go test -v ./...
+
+  docker buildx build --platform=linux/amd64 -f Dockerfile -t $app_name .
+  docker tag "$app_name" "$image_repo:$GIT_COMMIT_HASH"
+  docker push "$image_repo:$GIT_COMMIT_HASH"
+  retag_latest "$AWS_ENV/$app_name"
+
+  echo ""
+  popd
+  echo ""
+}
+
+# Terraform's own apply already registered the new task definition revision
+# and updated the service (the image was pushed moments earlier). Just wait
+# for the rollout to stabilize and confirm the circuit breaker didn't roll it
+# back to an older revision.
+wait_for_deploy() {
   local service_name=$1
-  local container_name=$2
-  local new_image=$3
   local cluster_name="$AWS_ENV--$PROJECT_NAME--ecs-cluster"
 
-  echo "Registering new task definition revision for $service_name"
-
-  local current_task_def_arn
-  current_task_def_arn=$(aws ecs describe-services \
+  local expected_task_def_arn
+  expected_task_def_arn=$(aws ecs describe-services \
     --cluster "$cluster_name" --services "$service_name" \
     --query 'services[0].taskDefinition' --output text)
-
-  # Clone the current revision, swap the image, carry the tags over
-  # (--include TAGS returns them as a sibling of .taskDefinition), and strip
-  # the read-only fields that register-task-definition rejects.
-  local new_task_def
-  new_task_def=$(aws ecs describe-task-definition \
-    --task-definition "$current_task_def_arn" \
-    --include TAGS \
-    | jq --arg IMAGE "$new_image" --arg NAME "$container_name" '
-        (.tags // []) as $tags
-        | .taskDefinition
-        | .containerDefinitions |= map(if .name == $NAME then .image = $IMAGE else . end)
-        | del(.taskDefinitionArn, .revision, .status, .requiresAttributes,
-              .compatibilities, .registeredAt, .registeredBy)
-        | .tags = $tags
-      ')
-
-  local new_task_def_arn
-  new_task_def_arn=$(aws ecs register-task-definition \
-    --cli-input-json "$new_task_def" \
-    --query 'taskDefinition.taskDefinitionArn' --output text)
-
-  echo "Updating service to $new_task_def_arn"
-  aws ecs update-service \
-    --cluster "$cluster_name" --service "$service_name" \
-    --task-definition "$new_task_def_arn" >/dev/null
 
   echo "Waiting for service to become stable"
   # The built-in waiter gives up after 10 minutes (40 x 15s) and is not
@@ -96,17 +104,14 @@ deploy_service() {
     return 1
   fi
 
-  # The deployment circuit breaker rolls back failed deploys, and the waiter
-  # then reports "stable" for the OLD version. Verify the active revision is
-  # the one we just registered.
   local active_task_def_arn
   active_task_def_arn=$(aws ecs describe-services \
     --cluster "$cluster_name" --services "$service_name" \
     --query 'services[0].taskDefinition' --output text)
 
-  if [[ "$active_task_def_arn" != "$new_task_def_arn" ]]; then
+  if [[ "$active_task_def_arn" != "$expected_task_def_arn" ]]; then
     echo "Deployment was rolled back!"
-    echo "  expected: $new_task_def_arn"
+    echo "  expected: $expected_task_def_arn"
     echo "  active:   $active_task_def_arn"
     return 1
   fi
@@ -114,41 +119,13 @@ deploy_service() {
   echo "Deploy complete"
 }
 
-# Push the app image to the ECR repository managed by terraform
-push_image() {
-  local registry="$AWS_ACCOUNT.dkr.ecr.$AWS_REGION.amazonaws.com"
-  local app1_name="chip"
-  local app2_name="app"
-  local image1_repo="$registry/$AWS_ENV/$app1_name"
-  local image2_repo="$registry/$AWS_ENV/$app2_name"
-  local source_image="fidelissauro/chip:v2"
-
-  aws ecr get-login-password --region "$AWS_REGION" | docker login --username AWS --password-stdin "$registry"
-
-  # docker pull --platform=linux/amd64 "$source_image"
-  # docker tag "$source_image" "$image1_repo:$GIT_COMMIT_HASH"
-  # docker push "$image1_repo:$GIT_COMMIT_HASH"
-  # retag_latest "$AWS_ENV/$app1_name"
-
-  echo ""
-  pushd ../app
-  echo ""
-
-  docker buildx build --platform=linux/amd64 -f Dockerfile -t $app2_name .
-  docker tag "$app2_name" "$image2_repo:$GIT_COMMIT_HASH"
-  docker push "$image2_repo:$GIT_COMMIT_HASH"
-  retag_latest "$AWS_ENV/$app2_name"
-
-  echo ""
-  popd
-  echo ""
-
-  deploy_service "$app2_name" "$app2_name" "$image2_repo:$GIT_COMMIT_HASH"
-}
-
 # Function to apply terraform infrastructure in a directory
 apply_terraform() {
   local dir=$1
+
+  if [[ "$dir" == "$APP1_DIR" ]]; then
+    build_and_push_image
+  fi
 
   echo ""
   pushd "$dir/$TF_SUBDIR"
@@ -158,13 +135,13 @@ apply_terraform() {
   terraform workspace select "$AWS_ENV"
   terraform apply --auto-approve
 
-  if [[ "$dir" == "$APP1_DIR" ]]; then
-    push_image
-  fi
-
   echo ""
   popd
   echo ""
+
+  if [[ "$dir" == "$APP1_DIR" ]]; then
+    wait_for_deploy "app"
+  fi
 }
 
 # Function to destroy terraform infrastructure in a directory

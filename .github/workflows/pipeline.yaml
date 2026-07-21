@@ -33,6 +33,11 @@ on:
         default: true
 
 env:
+  # Exported as plain env vars (not just workflow inputs) so hook scripts
+  # (ci/pre_build.sh etc.) can read them the same way whether they're
+  # invoked from this workflow or from the local tf-container-arch.sh script.
+  AWS_ENV: ${{ inputs.aws_env }}
+  APP_NAME: ${{ inputs.app_name }}
   IMAGE_TAG: ${{ github.sha }}
   IMAGE_REPO: ${{ inputs.aws_account }}.dkr.ecr.${{ inputs.aws_region }}.amazonaws.com/${{ inputs.aws_env }}/${{ inputs.app_name }}
   ECR_REPOSITORY: ${{ inputs.aws_env }}/${{ inputs.app_name }}
@@ -41,8 +46,8 @@ env:
 jobs:
   # ------------------------ Change detection ------------------------
   # Detects whether anything under app/ (Go code, go.mod/go.sum, Dockerfile)
-  # changed, so the whole app chain (test -> build -> deploy) is skipped on
-  # infra-only changes, saving runners.
+  # changed, so the whole app chain (test -> build) is skipped on infra-only
+  # changes, saving runners.
   changes:
     name: Detect App Changes
     runs-on: ubuntu-latest
@@ -144,17 +149,17 @@ jobs:
       - name: Terraform Validate
         run: terraform validate
 
-  # ------------------- Build (parallel, no AWS) -------------------
-  # Builds the image and hands it to the deploy job as an artifact. It needs no
-  # AWS credentials and does NOT depend on terraform, so it runs in parallel
-  # with the whole infra pipeline. The push only happens later, in cd-app,
-  # once cd-infra has created the ECR repository.
+  # --------------------- Build & push (sequential) ---------------------
+  # Builds and pushes the image BEFORE terraform plans/applies, so the
+  # module's ECR tag lookup (check_ecr_latest_tag.sh) always resolves to THIS
+  # commit's image. Terraform then becomes the single mechanism that deploys
+  # both the image and any infra change, in one rollout — instead of racing
+  # terraform's apply (which used to see a one-commit-stale tag) against a
+  # separate CLI-based deploy step, which caused redundant/duplicate rollouts.
   ci-app-build:
-    name: CI App (Build Image)
+    name: CI App (Build & Push)
     runs-on: ubuntu-latest
     needs: [ci-app-test]
-    outputs:
-      image_exists: ${{ steps.check.outputs.image_exists }}
     permissions:
       id-token: write
       contents: read
@@ -166,11 +171,22 @@ jobs:
           role-to-assume: arn:aws:iam::${{ inputs.aws_account }}:role/github-oidc-role
           aws-region: ${{ inputs.aws_region }}
 
+      - name: Pre-build hook
+        # Runs ci/pre_build.sh if this repo provides one (e.g. bootstrapping
+        # the ECR repository right after the nightly destroy, before it
+        # exists for terraform to manage). A no-op otherwise, keeping this
+        # shared template generic across repos.
+        run: |
+          if [ -f "./ci/pre_build.sh" ]; then
+            bash ./ci/pre_build.sh
+          else
+            echo "No ci/pre_build.sh found, skipping."
+          fi
+
       - name: Check if image already exists in ECR
         id: check
-        # Idempotency: on re-runs of a commit whose image was already pushed,
-        # skip the build and let cd-app go straight to the deploy. A missing
-        # repository (first run) counts as "image does not exist".
+        # Idempotency: on re-runs of a commit whose image was already
+        # pushed, skip building and pushing again.
         run: |
           if aws ecr describe-images \
             --repository-name "$ECR_REPOSITORY" \
@@ -181,28 +197,51 @@ jobs:
             echo "image_exists=false" >> "$GITHUB_OUTPUT"
           fi
 
+      - name: ECR Login
+        if: steps.check.outputs.image_exists != 'true'
+        run: |
+          aws ecr get-login-password --region "${{ inputs.aws_region }}" \
+            | docker login --username AWS --password-stdin \
+              "${{ inputs.aws_account }}.dkr.ecr.${{ inputs.aws_region }}.amazonaws.com"
+
       - name: Docker Build
         if: steps.check.outputs.image_exists != 'true'
         run: docker build --platform=linux/amd64 -t "$IMAGE_REPO:$IMAGE_TAG" app
 
-      - name: Docker Save
+      - name: Docker Push
         if: steps.check.outputs.image_exists != 'true'
-        run: docker save "$IMAGE_REPO:$IMAGE_TAG" | gzip > image.tar.gz
+        run: docker push "$IMAGE_REPO:$IMAGE_TAG"
 
-      - name: Upload Image
-        # Only needed when this run will deploy and the image is not already
-        # published; skipped for CI-only validation and for re-runs.
-        if: ${{ inputs.deploy && steps.check.outputs.image_exists != 'true' }}
-        uses: actions/upload-artifact@v6
-        with:
-          name: app-image
-          path: image.tar.gz
-          retention-days: 1
+      - name: Tag latest (server-side)
+        # Point "latest" at the image we just pushed without re-uploading layers.
+        # Re-putting an unchanged tag returns ImageAlreadyExistsException; ignore it.
+        run: |
+          MANIFEST=$(aws ecr batch-get-image \
+            --repository-name "$ECR_REPOSITORY" \
+            --image-ids imageTag="$IMAGE_TAG" \
+            --query 'images[0].imageManifest' --output text)
+
+          aws ecr put-image \
+            --repository-name "$ECR_REPOSITORY" \
+            --image-tag latest \
+            --image-manifest "$MANIFEST" >/dev/null 2>&1 || true
+
+      - name: Post-build hook
+        run: |
+          if [ -f "./ci/post_build.sh" ]; then
+            bash ./ci/post_build.sh
+          else
+            echo "No ci/post_build.sh found, skipping."
+          fi
 
   ci-infra-build:
     name: CI Infra (Plan)
     runs-on: ubuntu-latest
-    needs: [ci-infra-test]
+    needs: [ci-infra-test, ci-app-build]
+    # Must still run when ci-app-build is skipped (no app change: nothing to
+    # push, the image lookup is unaffected), but never when a needed job
+    # failed or the run was cancelled.
+    if: ${{ !failure() && !cancelled() }}
     outputs:
       has_changes: ${{ steps.plan.outputs.has_changes }}
     permissions:
@@ -260,9 +299,13 @@ jobs:
           path: terraform/plan.tfplan
           retention-days: 1
 
-  # --------------------------- CD Infra ---------------------------
+  # ------------------------- CD Infra & Deploy -------------------------
+  # Terraform is now the single deploy mechanism: since the image was already
+  # pushed by ci-app-build, this apply registers the task definition (image
+  # and/or infra changes) and rolls the service in one shot — no separate
+  # CLI-based register-task-definition/update-service step needed.
   cd-infra:
-    name: CD Infra (Apply)
+    name: CD Infra (Apply & Deploy)
     runs-on: ubuntu-latest
     needs: [ci-infra-build]
     if: ${{ inputs.deploy && needs.ci-infra-build.outputs.has_changes == 'true' }}
@@ -299,102 +342,23 @@ jobs:
           name: tfplan
           path: terraform
 
+      - name: Pre-deploy hook
+        run: |
+          if [ -f "../ci/pre_deploy.sh" ]; then
+            bash ../ci/pre_deploy.sh
+          else
+            echo "No ci/pre_deploy.sh found, skipping."
+          fi
+
       - name: Terraform Apply
-        run: terraform apply -auto-approve plan.tfplan
-
-  # ---------------------------- CD App ----------------------------
-  # Waits for both the built image (ci-app-build) and the infrastructure
-  # (cd-infra, which creates the ECR repo and ECS service), then publishes the
-  # image and rolls the service onto a new task definition revision.
-  cd-app:
-    name: CD App (Deploy)
-    runs-on: ubuntu-latest
-    needs: [changes, ci-app-build, cd-infra]
-    # Must still run when cd-infra is skipped (no infra changes: the app image
-    # deploy is independent), but never when a needed job failed or the run
-    # was cancelled — hence the explicit !failure() && !cancelled(). Also
-    # skipped entirely when nothing under app/ changed (no new image to ship).
-    if: ${{ !failure() && !cancelled() && inputs.deploy && needs.changes.outputs.app_changed == 'true' }}
-    permissions:
-      id-token: write
-      contents: read
-    steps:
-      - uses: actions/checkout@v5
-
-      - uses: aws-actions/configure-aws-credentials@v6
-        with:
-          role-to-assume: arn:aws:iam::${{ inputs.aws_account }}:role/github-oidc-role
-          aws-region: ${{ inputs.aws_region }}
-
-      # The four docker steps below are skipped when ci-app-build found the
-      # image already in ECR (re-run): the deploy goes straight to the task
-      # definition registration.
-      - name: Download Image
-        if: needs.ci-app-build.outputs.image_exists != 'true'
-        uses: actions/download-artifact@v7
-        with:
-          name: app-image
-
-      - name: Docker Load
-        if: needs.ci-app-build.outputs.image_exists != 'true'
-        run: docker load < image.tar.gz
-
-      - name: ECR Login
-        if: needs.ci-app-build.outputs.image_exists != 'true'
+        id: apply
         run: |
-          aws ecr get-login-password --region "${{ inputs.aws_region }}" \
-            | docker login --username AWS --password-stdin \
-              "${{ inputs.aws_account }}.dkr.ecr.${{ inputs.aws_region }}.amazonaws.com"
+          terraform apply -auto-approve plan.tfplan
 
-      - name: Push Image
-        if: needs.ci-app-build.outputs.image_exists != 'true'
-        run: docker push "$IMAGE_REPO:$IMAGE_TAG"
-
-      - name: Tag latest (server-side)
-        # Point "latest" at the image we just pushed without re-uploading layers.
-        # Re-putting an unchanged tag returns ImageAlreadyExistsException; ignore it.
-        run: |
-          MANIFEST=$(aws ecr batch-get-image \
-            --repository-name "$ECR_REPOSITORY" \
-            --image-ids imageTag="$IMAGE_TAG" \
-            --query 'images[0].imageManifest' --output text)
-
-          aws ecr put-image \
-            --repository-name "$ECR_REPOSITORY" \
-            --image-tag latest \
-            --image-manifest "$MANIFEST" >/dev/null 2>&1 || true
-
-      - name: Register Task Definition & Update Service
-        id: deploy
-        # Clone the running revision, swap the image, carry the tags over
-        # (--include TAGS returns them as a sibling of .taskDefinition), and
-        # strip the read-only fields that register-task-definition rejects.
-        run: |
-          CURRENT_TASK_DEF_ARN=$(aws ecs describe-services \
+          TASK_DEF_ARN=$(aws ecs describe-services \
             --cluster "$CLUSTER_NAME" --services "${{ inputs.app_name }}" \
             --query 'services[0].taskDefinition' --output text)
-
-          NEW_TASK_DEF=$(aws ecs describe-task-definition \
-            --task-definition "$CURRENT_TASK_DEF_ARN" \
-            --include TAGS \
-            | jq --arg IMAGE "$IMAGE_REPO:$IMAGE_TAG" --arg NAME "${{ inputs.app_name }}" '
-                (.tags // []) as $tags
-                | .taskDefinition
-                | .containerDefinitions |= map(if .name == $NAME then .image = $IMAGE else . end)
-                | del(.taskDefinitionArn, .revision, .status, .requiresAttributes,
-                      .compatibilities, .registeredAt, .registeredBy)
-                | .tags = $tags
-              ')
-
-          NEW_TASK_DEF_ARN=$(aws ecs register-task-definition \
-            --cli-input-json "$NEW_TASK_DEF" \
-            --query 'taskDefinition.taskDefinitionArn' --output text)
-
-          echo "task_def_arn=$NEW_TASK_DEF_ARN" >> "$GITHUB_OUTPUT"
-
-          aws ecs update-service \
-            --cluster "$CLUSTER_NAME" --service "${{ inputs.app_name }}" \
-            --task-definition "$NEW_TASK_DEF_ARN" >/dev/null
+          echo "task_def_arn=$TASK_DEF_ARN" >> "$GITHUB_OUTPUT"
 
       - name: Wait for ECS service to stabilize
         # The built-in waiter gives up after 10 minutes (40 x 15s) and is not
@@ -414,13 +378,13 @@ jobs:
         # The service has a deployment circuit breaker with rollback enabled:
         # a failed deploy rolls back to the previous revision, and the waiter
         # then reports "stable" for the OLD version. Fail the pipeline when
-        # the active revision is not the one this run registered.
+        # the active revision is not the one this run applied.
         run: |
           ACTIVE_TASK_DEF_ARN=$(aws ecs describe-services \
             --cluster "$CLUSTER_NAME" --services "${{ inputs.app_name }}" \
             --query 'services[0].taskDefinition' --output text)
 
-          EXPECTED_TASK_DEF_ARN="${{ steps.deploy.outputs.task_def_arn }}"
+          EXPECTED_TASK_DEF_ARN="${{ steps.apply.outputs.task_def_arn }}"
 
           if [ "$ACTIVE_TASK_DEF_ARN" != "$EXPECTED_TASK_DEF_ARN" ]; then
             echo "Deployment was rolled back!"
@@ -430,3 +394,11 @@ jobs:
           fi
 
           echo "Deployment verified: $ACTIVE_TASK_DEF_ARN"
+
+      - name: Post-deploy hook
+        run: |
+          if [ -f "../ci/post_deploy.sh" ]; then
+            bash ../ci/post_deploy.sh
+          else
+            echo "No ci/post_deploy.sh found, skipping."
+          fi
