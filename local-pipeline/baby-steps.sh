@@ -155,3 +155,8 @@ aws ecs wait services-stable \
   --region "$AWS_REGION"
 
 echo "Deploy complete"
+
+# app.linuxtips.demo isn't a real domain (Route53 can't host it), so local
+# testing resolves it via /etc/hosts; keep it pointed at the ALB's current IP.
+AWS_ENV="$AWS_ENV" AWS_REGION="$AWS_REGION" PROJECT_NAME="$PROJECT_NAME" \
+  bash "$(dirname "${BASH_SOURCE[0]}")/../local-pipeline/update_etc_hosts.sh"

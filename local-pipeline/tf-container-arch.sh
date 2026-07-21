@@ -179,6 +179,11 @@ case $1 in
     # Apply app directory last
     apply_terraform $APP1_DIR
 
+    # app.linuxtips.demo isn't a real domain (Route53 can't host it), so local
+    # testing resolves it via /etc/hosts; keep it pointed at the ALB's current IP.
+    AWS_ENV="$AWS_ENV" AWS_REGION="$AWS_REGION" PROJECT_NAME="$PROJECT_NAME" \
+      bash "$APP1_DIR/local-pipeline/update_etc_hosts.sh"
+
     exit 0
     ;;
   --destroy|-D)
@@ -202,6 +207,9 @@ case $1 in
     exit 0
     ;;
   --test|-T)
+    AWS_ENV="$AWS_ENV" AWS_REGION="$AWS_REGION" PROJECT_NAME="$PROJECT_NAME" \
+      bash "$APP1_DIR/local-pipeline/update_etc_hosts.sh"
+
     DNS_NAME=$(aws elbv2 describe-load-balancers \
       --names "$AWS_ENV--$PROJECT_NAME--lb" \
       --query 'LoadBalancers[0].DNSName' \
