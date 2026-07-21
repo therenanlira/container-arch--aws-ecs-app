@@ -25,6 +25,16 @@ module "ecs_service" {
   scale_out_cpu           = local.workspace.scale_out_cpu
   scale_in_cpu            = local.workspace.scale_in_cpu
 
+  efs_volumes = [
+    {
+      volume_name      = module.efs.name
+      file_system_id   = module.efs.id
+      file_system_root = "/"
+      mount_point      = "/mnt/efs"
+      read_only        = false
+    }
+  ]
+
   alb_arn = data.terraform_remote_state.aws_ecs_cluster.outputs.lb_arn
 
   capabilities          = local.workspace.capabilities
