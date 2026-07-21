@@ -39,4 +39,14 @@ module "ecs_service" {
 
   capabilities          = local.workspace.capabilities
   environment_variables = local.workspace.env_vars
+  secrets = [
+    {
+      name      = "VALUE_FROM_SSM_PARAMETER_STORE"
+      valueFrom = module.test_parameter_store.arn
+    },
+    {
+      name      = "VALUE_FROM_SSM_SECRETS_MANAGER"
+      valueFrom = module.test_secrets_manager.arn
+    }
+  ]
 }

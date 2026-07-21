@@ -52,7 +52,6 @@ workspaces = {
       cooldown            = 60
     }
 
-
     service_healthcheck = {
       healthy_threshold   = 2
       unhealthy_threshold = 10
@@ -75,6 +74,10 @@ workspaces = {
       {
         name  = "PING"
         value = "PONG"
+      },
+      {
+        name  = "DB_PASS"
+        value = "abc123456"
       }
     ]
   }
