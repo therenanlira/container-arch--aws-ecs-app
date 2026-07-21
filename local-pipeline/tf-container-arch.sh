@@ -44,6 +44,7 @@ retag_latest() {
 # registers the correct task definition revision directly — no separate CLI
 # registration step needed, and no lag/revert to an older image next run.
 build_and_push_image() {
+  local dir=$1
   local registry="$AWS_ACCOUNT.dkr.ecr.$AWS_REGION.amazonaws.com"
   local app_name="app"
   local image_repo="$registry/$AWS_ENV/$app_name"
@@ -56,7 +57,7 @@ build_and_push_image() {
   aws ecr get-login-password --region "$AWS_REGION" | docker login --username AWS --password-stdin "$registry"
 
   echo ""
-  pushd ../app
+  pushd $dir/app
   echo ""
 
   go install github.com/golangci/golangci-lint/cmd/golangci-lint@v1.59.1
@@ -124,7 +125,7 @@ apply_terraform() {
   local dir=$1
 
   if [[ "$dir" == "$APP1_DIR" ]]; then
-    build_and_push_image
+    build_and_push_image $dir
   fi
 
   echo ""
@@ -209,6 +210,10 @@ case $1 in
       --region $AWS_REGION)
 
     case $2 in
+      update-host)
+        AWS_ENV="$AWS_ENV" AWS_REGION="$AWS_REGION" PROJECT_NAME="$PROJECT_NAME" \
+          bash "$APP1_DIR/local-pipeline/update_etc_hosts.sh"
+        ;;
       system)
         curl $DNS_NAME/system -H "Host: chip.linuxtips.demo" -i
         exit 0

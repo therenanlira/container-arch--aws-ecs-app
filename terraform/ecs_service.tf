@@ -1,5 +1,6 @@
 module "ecs_service" {
-  source = "git::https://github.com/therenanlira/container-arch--aws-modules.git//ecs_service?ref=v1"
+  # source = "git::https://github.com/therenanlira/container-arch--aws-modules.git//ecs_service?ref=v1"
+  source = "../../container-arch--aws-modules/ecs_service"
 
   cluster_name   = data.terraform_remote_state.aws_ecs_cluster.outputs.ecs_cluster_name
   project_name   = local.workspace.project_name
@@ -39,4 +40,14 @@ module "ecs_service" {
 
   capabilities          = local.workspace.capabilities
   environment_variables = local.workspace.env_vars
+  secrets = [
+    {
+      name      = "VALUE_FROM_SSM_PARAMETER_STORE"
+      valueFrom = module.test_parameter_store.arn
+    },
+    {
+      name      = "VALUE_FROM_SSM_SECRETS_MANAGER"
+      valueFrom = module.test_secrets_manager.arn
+    }
+  ]
 }
