@@ -8,12 +8,11 @@ workspaces = {
 
     capabilities = ["EC2"]
 
-    service_name       = "app"
-    service_port       = 8080
-    service_cpu        = 256
-    service_mem        = 512
-    service_listener   = 80
-    service_task_count = 1
+    service_name     = "app"
+    service_port     = 8080
+    service_cpu      = 256
+    service_mem      = 512
+    service_listener = 80
 
     service_launch_type = [
       {
@@ -31,6 +30,7 @@ workspaces = {
     scale_tracking_requests = 30
     task_min                = 2
     task_max                = 4
+    task_count              = 1
 
     scale_out_cpu = {
       threshold           = 50
@@ -63,7 +63,8 @@ workspaces = {
     }
 
     service_hosts = [
-      "app.linuxtips.demo"
+      # "app.linuxtips.demo",
+      "app.container-arch.internal.com"
     ]
 
     env_vars = [

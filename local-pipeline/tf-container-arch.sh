@@ -153,6 +153,7 @@ destroy_terraform() {
   pushd "$dir/$TF_SUBDIR"
   echo ""
 
+  terraform init
   terraform workspace select "$AWS_ENV"
   terraform destroy --auto-approve
 
@@ -201,6 +202,9 @@ case $1 in
     destroy_terraform $VPC_DIR
 
     exit 0
+    ;;
+  --build|-B)
+    build_and_push_image $APP1_DIR
     ;;
   --test|-T)
     DNS_NAME=$(aws elbv2 describe-load-balancers \
