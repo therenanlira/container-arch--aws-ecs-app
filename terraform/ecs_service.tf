@@ -43,7 +43,7 @@ module "ecs_service" {
   dns_zone_id = data.terraform_remote_state.aws_vpc.outputs.dns_zone_id
   dns_name    = data.terraform_remote_state.aws_vpc.outputs.dns_name
 
-  service_discovery_namespace = data.terraform_remote_state.aws_ecs_cluster.outputs.cloudmap
+  service_discovery_namespace = data.terraform_remote_state.aws_ecs_cluster.outputs.cloudmap_id
 
   capabilities          = local.workspace.capabilities
   environment_variables = local.workspace.env_vars
