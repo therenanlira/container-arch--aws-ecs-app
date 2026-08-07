@@ -11,8 +11,7 @@ locals {
 
 module "ecs_health_api_lab" {
   for_each = toset(local.health_api_lab)
-  # source = "git::https://github.com/therenanlira/container-arch--aws-modules.git//ecs_service?ref=v1"
-  source = "../../container-arch--aws-modules/ecs_service"
+  source   = "git::https://github.com/therenanlira/container-arch--aws-modules.git//ecs_service?ref=v1"
 
   cluster_name   = data.terraform_remote_state.aws_ecs_cluster.outputs.ecs_cluster_name
   project_name   = local.workspace.project_name
@@ -67,8 +66,7 @@ module "ecs_health_api_lab" {
 }
 
 module "ecs_health_api" {
-  # source = "git::https://github.com/therenanlira/container-arch--aws-modules.git//ecs_service?ref=v1"
-  source = "../../container-arch--aws-modules/ecs_service"
+  source = "git::https://github.com/therenanlira/container-arch--aws-modules.git//ecs_service?ref=v1"
 
   cluster_name   = data.terraform_remote_state.aws_ecs_cluster.outputs.ecs_cluster_name
   project_name   = local.workspace.project_name
@@ -143,8 +141,7 @@ module "ecs_health_api" {
 }
 
 module "ecs_jeaeger_collector" {
-  # source = "git::https://github.com/therenanlira/container-arch--aws-modules.git//ecs_service?ref=v1"
-  source = "../../container-arch--aws-modules/ecs_service"
+  source = "git::https://github.com/therenanlira/container-arch--aws-modules.git//ecs_service?ref=v1"
 
   cluster_name   = data.terraform_remote_state.aws_ecs_cluster.outputs.ecs_cluster_name
   project_name   = local.workspace.project_name
