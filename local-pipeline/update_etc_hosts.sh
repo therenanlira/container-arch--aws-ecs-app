@@ -1,10 +1,5 @@
 #!/usr/bin/env bash
-# Points app.linuxtips.demo at the ALB's current IP in /etc/hosts. Route53
-# can't host this domain (it isn't a real registered domain, just used for
-# local testing), so it has to be resolved locally — and since ALBs don't
-# have a stable IP, this needs to be refreshed whenever the environment
-# changes. Requires sudo to write /etc/hosts; a no-op if the IP is already
-# current, so it won't prompt on every run.
+
 set -euo pipefail
 
 : "${AWS_ENV:?AWS_ENV must be set}"

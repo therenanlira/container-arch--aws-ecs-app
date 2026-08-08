@@ -22,8 +22,9 @@ echo "ECR repository $REPO_NAME missing (fresh environment) — bootstrapping it
 pushd "$(dirname "${BASH_SOURCE[0]}")/../terraform" >/dev/null
 
 terraform init
-terraform workspace select -or-create "$AWS_ENV"
+terraform workspace select "$AWS_ENV"
+
 terraform apply -auto-approve \
-  -target=module.ecs_service.module.ecr_repository.aws_ecr_repository.main
+  -target='module.ecs_service.module.ecr_repository[0].aws_ecr_repository.main'
 
 popd >/dev/null
