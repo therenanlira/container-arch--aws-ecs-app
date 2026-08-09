@@ -93,6 +93,8 @@ module "ecs_health_api" {
   alb_dns_name     = data.terraform_remote_state.aws_ecs_cluster.outputs.lb_dns_name
   alb_zone_id      = data.terraform_remote_state.aws_ecs_cluster.outputs.lb_zone_id
 
+  ecs_deployment_type = "BLUE_GREEN"
+
   service_healthcheck = {
     healthy_threshold   = 3
     unhealthy_threshold = 10
