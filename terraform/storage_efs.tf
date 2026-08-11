@@ -3,4 +3,5 @@ module "efs" {
 
   service_name   = local.workspace.service_name
   network_values = data.terraform_remote_state.aws_vpc.outputs
+  environment    = local.workspace.environment
 }
