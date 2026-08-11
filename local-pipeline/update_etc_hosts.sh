@@ -2,14 +2,14 @@
 
 set -euo pipefail
 
-: "${AWS_ENV:?AWS_ENV must be set}"
+: "${AWS_ENVIRONMENT:?AWS_ENVIRONMENT must be set}"
 : "${AWS_REGION:?AWS_REGION must be set}"
 : "${PROJECT_NAME:?PROJECT_NAME must be set}"
 
 DOMAIN="app.linuxtips.demo"
 
 DNS_NAME=$(aws elbv2 describe-load-balancers \
-  --names "$AWS_ENV--$PROJECT_NAME--lb" \
+  --names "$AWS_ENVIRONMENT--$PROJECT_NAME--lb" \
   --query 'LoadBalancers[0].DNSName' \
   --output text --region "$AWS_REGION" 2>/dev/null) || DNS_NAME=""
 

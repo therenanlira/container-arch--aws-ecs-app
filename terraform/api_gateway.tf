@@ -3,6 +3,7 @@ module "api_gateway" {
 
   project_name = local.workspace.project_name
   service_name = local.workspace.service_name
+  environment  = local.workspace.environment
 
   body_file = templatefile("${path.module}/assets/openapi.json.tftpl", {
     environment     = terraform.workspace

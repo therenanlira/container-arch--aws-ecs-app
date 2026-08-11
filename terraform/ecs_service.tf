@@ -4,6 +4,7 @@ module "ecs_service" {
   cluster_name   = data.terraform_remote_state.aws_ecs_cluster.outputs.ecs_cluster_name
   project_name   = local.workspace.project_name
   network_values = data.terraform_remote_state.aws_vpc.outputs
+  environment    = local.workspace.environment
 
   service_name = local.workspace.service_name
   service_port = local.workspace.service_port

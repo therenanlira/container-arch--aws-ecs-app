@@ -16,6 +16,7 @@ module "ecs_health_api_lab" {
   cluster_name   = data.terraform_remote_state.aws_ecs_cluster.outputs.ecs_cluster_name
   project_name   = local.workspace.project_name
   network_values = data.terraform_remote_state.aws_vpc.outputs
+  environment    = local.workspace.environment
 
   service_name = "nutrition-${each.key}"
   service_port = "30000"
@@ -71,6 +72,7 @@ module "ecs_health_api" {
   cluster_name   = data.terraform_remote_state.aws_ecs_cluster.outputs.ecs_cluster_name
   project_name   = local.workspace.project_name
   network_values = data.terraform_remote_state.aws_vpc.outputs
+  environment    = local.workspace.environment
 
   service_name = "nutrition-health-api"
   service_port = "30000"
@@ -148,6 +150,7 @@ module "ecs_jeaeger_collector" {
   cluster_name   = data.terraform_remote_state.aws_ecs_cluster.outputs.ecs_cluster_name
   project_name   = local.workspace.project_name
   network_values = data.terraform_remote_state.aws_vpc.outputs
+  environment    = local.workspace.environment
 
   service_name = "nutrition-jaeger-collector"
   service_port = "9411"

@@ -8,9 +8,10 @@
 set -euo pipefail
 
 : "${AWS_ENV:?AWS_ENV must be set}"
+: "${AWS_ENVIRONMENT:?AWS_ENVIRONMENT must be set}"
 : "${APP_NAME:?APP_NAME must be set}"
 
-REPO_NAME="${AWS_ENV}/${APP_NAME}"
+REPO_NAME="${AWS_ENVIRONMENT}--${APP_NAME}"
 
 if aws ecr describe-repositories --repository-names "$REPO_NAME" >/dev/null 2>&1; then
   echo "ECR repository $REPO_NAME already exists, nothing to bootstrap."
