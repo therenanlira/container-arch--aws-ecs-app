@@ -313,7 +313,10 @@ jobs:
     name: CD Infra (Apply & Deploy)
     runs-on: ubuntu-latest
     needs: [ci-infra-build]
-    if: ${{ inputs.deploy && needs.ci-infra-build.outputs.has_changes == 'true' }}
+    # ci-app-build is skipped whenever app/ didn't change, and that skip
+    # propagates down the needs chain unless a status function is used here
+    # too — same reason ci-infra-build carries one.
+    if: ${{ !failure() && !cancelled() && inputs.deploy && needs.ci-infra-build.outputs.has_changes == 'true' }}
     permissions:
       id-token: write
       contents: read

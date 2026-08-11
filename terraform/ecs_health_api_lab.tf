@@ -142,6 +142,7 @@ module "ecs_health_api" {
   ]
 
   capabilities = local.workspace.capabilities
+  force_delete = true
 }
 
 module "ecs_jeaeger_collector" {
