@@ -31,3 +31,7 @@ output "sns_sales_arn" {
 output "sns_sales_suffix" {
   value = module.sns_sales.topic_suffix
 }
+
+output "api_gateway_sales_invoke_url" {
+  value = module.api_gateway_sales.invoke_url
+}
