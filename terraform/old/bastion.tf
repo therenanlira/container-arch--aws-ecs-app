@@ -1,3 +1,5 @@
+# Not needed to the Final Project
+
 # module "bastion" {
 #   source = "git::https://github.com/therenanlira/container-arch--aws-modules.git//ec2_instance?ref=v1"
 

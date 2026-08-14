@@ -1,7 +1,7 @@
 locals {
   workspace = var.workspaces[terraform.workspace]
 
-  has_central = can(try(data.terraform_remote_state.central[0].outputs, {}))
+  has_central = can(data.terraform_remote_state.central[0].outputs.sqs_sales_arn)
 
   tags = {
     Project     = local.workspace.project_name
