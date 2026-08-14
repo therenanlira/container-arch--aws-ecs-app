@@ -24,7 +24,7 @@ module "dynamodb_idempotency" {
   }
 }
 
-module "dynamodb_replica" {
+module "dynamodb_idempotency_replica" {
   count  = !local.workspace.is_central && local.has_central ? 1 : 0
   source = "git::https://github.com/therenanlira/container-arch--aws-modules.git//dynamodb_table_replication?ref=v1"
 
@@ -55,4 +55,11 @@ module "dynamodb_sales" {
     write_max                 = 100
     write_autoscale_threshold = 80
   }
+}
+
+module "dynamodb_sales_replica" {
+  count  = !local.workspace.is_central && local.has_central ? 1 : 0
+  source = "git::https://github.com/therenanlira/container-arch--aws-modules.git//dynamodb_table_replication?ref=v1"
+
+  global_table_arn = try(data.terraform_remote_state.central[0].outputs.dynamodb_sales, null)
 }

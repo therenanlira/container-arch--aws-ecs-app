@@ -1,9 +1,9 @@
 workspaces = {
-  dev-us-east-1 = {
+  dev-us-east-2 = {
     allowed_accounts = ["150100906110"]
     environment      = "dev"
-    aws_region       = "us-east-1"
-    central_region   = "us-east-1"
+    aws_region       = "us-east-2"
+    central_region   = "us-east-2"
     is_central       = true
 
     project_name = "container-arch"
@@ -30,8 +30,8 @@ workspaces = {
     scale_type              = "requests-tracking"
     scale_tracking_cpu      = 50
     scale_tracking_requests = 30
-    task_min                = 2
-    task_max                = 4
+    task_min                = 1
+    task_max                = 3
     task_count              = 1
 
     scale_out_cpu = {
@@ -85,11 +85,11 @@ workspaces = {
     ]
   }
 
-  dev-us-east-2 = {
+  dev-us-west-2 = {
     allowed_accounts = ["150100906110"]
     environment      = "dev"
-    aws_region       = "us-east-2"
-    central_region   = "us-east-1"
+    aws_region       = "us-west-2"
+    central_region   = "us-east-2"
     is_central       = false
 
     project_name = "container-arch"
@@ -116,8 +116,8 @@ workspaces = {
     scale_type              = "requests-tracking"
     scale_tracking_cpu      = 50
     scale_tracking_requests = 30
-    task_min                = 2
-    task_max                = 4
+    task_min                = 1
+    task_max                = 3
     task_count              = 1
 
     scale_out_cpu = {

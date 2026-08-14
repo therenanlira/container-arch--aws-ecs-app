@@ -10,6 +10,10 @@ output "dynamodb_idempotency" {
   value = local.workspace.is_central ? module.dynamodb_idempotency[0].arn : null
 }
 
+output "dynamodb_sales" {
+  value = local.workspace.is_central ? module.dynamodb_sales[0].arn : null
+}
+
 output "sales_offload_datalake" {
   value = {
     bucket = module.sales_offload_datalake.bucket
@@ -17,9 +21,13 @@ output "sales_offload_datalake" {
   }
 }
 output "sqs_sales_arn" {
-  value = one(module.sqs_sales[*].arn)
+  value = module.sqs_sales.arn
 }
 
 output "sns_sales_arn" {
   value = module.sns_sales.arn
+}
+
+output "sns_sales_suffix" {
+  value = module.sns_sales.topic_suffix
 }

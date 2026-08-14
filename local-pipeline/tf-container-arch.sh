@@ -16,8 +16,8 @@ AWS_ACCOUNT="150100906110"
 # The environment names the regional resources, the workspace names the state
 # and the global ones.
 WORKSPACES=(
-  "dev:dev-us-east-1:us-east-1"
   "dev:dev-us-east-2:us-east-2"
+  "dev:dev-us-west-2:us-west-2"
 )
 
 GIT_COMMIT_HASH=$(git rev-parse --short HEAD)
