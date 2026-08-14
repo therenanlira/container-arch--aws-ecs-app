@@ -3,6 +3,8 @@ workspaces = {
     allowed_accounts = ["150100906110"]
     environment      = "dev"
     aws_region       = "us-east-1"
+    central_region   = "us-east-1"
+    is_central       = true
 
     project_name = "container-arch"
 
@@ -87,6 +89,8 @@ workspaces = {
     allowed_accounts = ["150100906110"]
     environment      = "dev"
     aws_region       = "us-east-2"
+    central_region   = "us-east-1"
+    is_central       = false
 
     project_name = "container-arch"
 
