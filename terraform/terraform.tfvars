@@ -5,6 +5,7 @@ workspaces = {
     aws_region       = "us-east-2"
     central_region   = "us-east-2"
     is_central       = true
+    dns_weight       = 100
 
     project_name = "container-arch"
 
@@ -91,6 +92,7 @@ workspaces = {
     aws_region       = "us-west-2"
     central_region   = "us-east-2"
     is_central       = false
+    dns_weight       = 0
 
     project_name = "container-arch"
 

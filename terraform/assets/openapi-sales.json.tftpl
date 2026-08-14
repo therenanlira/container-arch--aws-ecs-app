@@ -1,0 +1,64 @@
+{
+  "openapi": "3.0.1",
+  "info": {
+    "title": "Sales API",
+    "version": "1.0"
+  },
+  "servers": [
+    {
+      "url": "https://${alb_dns_name}",
+      "description": "${environment}"
+    }
+  ],
+  "paths": {
+    "/{proxy+}": {
+      "x-amazon-apigateway-any-method": {
+        "parameters": [
+          {
+            "name": "proxy",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response"
+          }
+        },
+        "security": [
+          {
+            "api_key": []
+          }
+        ],
+        "x-amazon-apigateway-integration": {
+          "type": "http_proxy",
+          "httpMethod": "ANY",
+          "uri": "http://${alb_dns_name}/{proxy}",
+          "connectionType": "INTERNET",
+          "passthroughBehavior": "WHEN_NO_MATCH",
+          "requestParameters": {
+            "integration.request.path.proxy": "method.request.path.proxy",
+            "integration.request.header.Host": "'${service_host}'"
+          },
+          "responses": {
+            "default": {
+              "statusCode": "200"
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "api_key": {
+        "type": "apiKey",
+        "name": "x-api-key",
+        "in": "header"
+      }
+    }
+  }
+}

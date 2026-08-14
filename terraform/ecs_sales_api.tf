@@ -19,6 +19,13 @@ module "ecs_sales_api" {
 
   service_listener = data.terraform_remote_state.aws_ecs_cluster.outputs.lb_listener_arn
   alb_arn          = data.terraform_remote_state.aws_ecs_cluster.outputs.lb_arn
+  alb_dns_name     = data.terraform_remote_state.aws_ecs_cluster.outputs.lb_dns_name
+  alb_zone_id      = data.terraform_remote_state.aws_ecs_cluster.outputs.lb_zone_id
+
+
+  dns_zone_id = data.terraform_remote_state.aws_vpc.outputs.dns_zone_id
+  dns_name    = data.terraform_remote_state.aws_vpc.outputs.dns_name
+  dns_weight  = local.workspace.dns_weight
 
   service_healthcheck = local.workspace.service_healthcheck
 
