@@ -20,6 +20,10 @@ module "sales_offload_datalake_replication_central" {
   destination_regions = [
     local.workspace.aws_region
   ]
+
+  depends_on = [
+    module.sales_offload_datalake
+  ]
 }
 
 module "sales_offload_datalake_replication_edge" {
@@ -37,5 +41,9 @@ module "sales_offload_datalake_replication_edge" {
 
   destination_regions = [
     local.workspace.central_region
+  ]
+
+  depends_on = [
+    module.sales_offload_datalake
   ]
 }
